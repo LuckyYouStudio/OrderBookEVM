@@ -1,0 +1,76 @@
+# Go build outputs
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+main
+cmd/main
+bin/
+build/
+dist/
+
+# Go test files
+*.test
+*.prof
+*.out
+coverage.out
+coverage.html
+
+# Go mod
+go.sum
+
+# Vendor directory
+vendor/
+
+# Environment files
+.env
+.env.local
+.env.production
+.env.staging
+
+# Configuration files
+config.yaml
+config.json
+configs/production.yaml
+configs/staging.yaml
+configs/local.yaml
+
+# Log files
+*.log
+logs/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Air live reload
+.air.toml
+tmp/
+
+# Private keys
+*.pem
+*.key
+private-keys/
+secrets/
+
+# Local storage
+storage/
+uploads/

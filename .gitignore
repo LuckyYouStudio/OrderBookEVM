@@ -1,0 +1,199 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+orderbook-engine/vendor/
+
+# Build outputs
+build/
+dist/
+frontend/dist/
+frontend/build/
+orderbook-engine/bin/
+orderbook-engine/build/
+
+# Hardhat files
+cache/
+artifacts/
+typechain/
+typechain-types/
+
+# Go build files
+orderbook-engine/*.exe
+orderbook-engine/*.exe~
+orderbook-engine/*.dll
+orderbook-engine/*.so
+orderbook-engine/*.dylib
+orderbook-engine/tmp/
+orderbook-engine/main
+orderbook-engine/cmd/main
+
+# Test coverage
+coverage/
+coverage.json
+*.lcov
+orderbook-engine/coverage.out
+orderbook-engine/coverage.html
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+orderbook-engine/.env
+orderbook-engine/.env.local
+
+# Configuration files with sensitive data
+config.yaml
+config.json
+configs/production.yaml
+configs/staging.yaml
+orderbook-engine/configs/production.yaml
+orderbook-engine/configs/staging.yaml
+
+# Private keys and secrets
+private-keys/
+keys/
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+mnemonic.txt
+seed.txt
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+data/
+postgres-data/
+mysql-data/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+orderbook-engine/logs/
+orderbook-engine/*.log
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Go specific
+orderbook-engine/go.sum
+orderbook-engine/.air.toml
+
+# Frontend specific
+frontend/.next/
+frontend/out/
+frontend/.nuxt/
+frontend/.vuepress/dist/
+frontend/.docusaurus/
+frontend/.cache/
+frontend/public/sw.js
+frontend/public/workbox-*.js
+
+# Package manager files
+package-lock.json
+yarn.lock
+orderbook-engine/go.sum
+
+# Deployment files
+.vercel/
+.netlify/
+.firebase/
+docker-compose.override.yml
+
+# Testing
+.nyc_output/
+coverage/
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Documentation build
+docs/build/
+site/
+
+# Backup files
+*.backup
+*.bak
+*.orig
+
+# Local development
+.local/
+local/
+
+# Certificate files
+*.crt
+*.cer
+*.der
+
+# Blockchain data
+blockchain-data/
+geth/
+parity/
+ganache-data/
+
+# Performance monitoring
+.clinic/
+speed/
+
+# Misc
+*.tgz
+*.tar.gz
+*.zip
+*.rar
+
+# Custom application data
+uploads/
+downloads/
+storage/
+public/uploads/
+
+# Monitoring and metrics
+metrics/
+prometheus/
+grafana/
+
+# Redis dump
+dump.rdb
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Kubernetes
+*.kubeconfig
