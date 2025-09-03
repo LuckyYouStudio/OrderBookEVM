@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"math/big"
 	"net/http"
 	"os"
@@ -11,12 +12,16 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/viper"
 
 	"orderbook-engine/internal/api"
+	"orderbook-engine/internal/blockchain"
 	"orderbook-engine/internal/matching"
 	"orderbook-engine/internal/storage"
+	"orderbook-engine/internal/types"
 	"orderbook-engine/internal/websocket"
 	"orderbook-engine/pkg/crypto"
 )
@@ -40,6 +45,26 @@ func main() {
 	contractAddress := common.HexToAddress(viper.GetString("blockchain.contract_address"))
 	signer := crypto.NewOrderSigner(chainID, contractAddress)
 
+	// 初始化区块链客户端
+	var blockchainClient *blockchain.Client
+	if viper.GetString("blockchain.rpc_url") != "" {
+		var err error
+		blockchainClient, err = blockchain.NewClient(
+			viper.GetString("blockchain.rpc_url"),
+			big.NewInt(viper.GetInt64("blockchain.chain_id")),
+			viper.GetString("blockchain.private_key"),
+			viper.GetString("blockchain.contract_address"),
+			viper.GetString("blockchain.settlement_address"),
+			logger,
+		)
+		if err != nil {
+			logger.WithError(err).Fatal("Failed to initialize blockchain client")
+		}
+		logger.Info("Blockchain client initialized")
+	} else {
+		logger.Warn("Blockchain integration disabled - no RPC URL provided")
+	}
+
 	// 初始化撮合引擎
 	engine := matching.NewMatchingEngine(logger)
 
@@ -47,8 +72,13 @@ func main() {
 	wsHub := websocket.NewHub(logger)
 	go wsHub.Run()
 
-	// 启动事件处理器
-	go handleMatchingEvents(engine, wsHub, logger)
+	// 启动区块链事件监听
+	if blockchainClient != nil && viper.GetBool("trading.auto_matching") {
+		go handleBlockchainEvents(blockchainClient, engine, logger)
+	}
+
+	// 启动撮合引擎事件处理器
+	go handleMatchingEvents(engine, wsHub, blockchainClient, logger)
 
 	// 初始化API处理器
 	handler := api.NewHandler(engine, store, signer, logger)
@@ -178,8 +208,75 @@ func setupRoutes(handler *api.Handler, wsHub *websocket.Hub) *gin.Engine {
 	return router
 }
 
+// handleBlockchainEvents 处理区块链事件
+func handleBlockchainEvents(client *blockchain.Client, engine *matching.MatchingEngine, logger *logrus.Logger) {
+	ctx := context.Background()
+	eventChan := make(chan *blockchain.OrderEvent, 1000)
+	
+	// 订阅订单事件
+	if err := client.SubscribeToOrderEvents(ctx, eventChan); err != nil {
+		logger.WithError(err).Error("Failed to subscribe to order events")
+		return
+	}
+	
+	logger.Info("Started blockchain event listener")
+	
+	for event := range eventChan {
+		// 将区块链订单事件转换为引擎订单
+		order := &types.Order{
+			ID:          uuid.New(), // 生成新的UUID
+			UserAddress: event.Trader.Hex(),
+			TradingPair: fmt.Sprintf("%s-%s", event.TokenA.Hex(), event.TokenB.Hex()),
+			BaseToken:   event.TokenA.Hex(),
+			QuoteToken:  event.TokenB.Hex(),
+			Price:       decimal.NewFromBigInt(event.Price, -6), // 假设USDC是6位小数
+			Amount:      decimal.NewFromBigInt(event.Amount, -18), // 假设WETH是18位小数
+			CreatedAt:   time.Unix(int64(event.Timestamp), 0),
+		}
+		
+		if event.IsBuy {
+			order.Side = types.OrderSideBuy
+		} else {
+			order.Side = types.OrderSideSell
+		}
+		
+		// 添加到撮合引擎
+		fills := engine.AddOrder(order)
+		
+		logger.WithFields(logrus.Fields{
+			"order_id": event.OrderID.String(),
+			"trader":   event.Trader.Hex(),
+			"pair":     order.TradingPair,
+			"side":     order.Side,
+			"fills":    len(fills),
+		}).Info("Processed blockchain order")
+		
+		// 处理成交记录，更新区块链状态
+		for _, fill := range fills {
+			go func(f *types.Fill) {
+				// 执行区块链交易
+				buyer := common.HexToAddress(f.TakerOrderID.String()) // 简化处理
+				seller := common.HexToAddress(f.MakerOrderID.String())
+				tokenA := common.HexToAddress(order.BaseToken)
+				tokenB := common.HexToAddress(order.QuoteToken)
+				
+				tx, err := client.ExecuteTrade(
+					buyer, seller, tokenA, tokenB,
+					f.Amount.BigInt(), f.Price.BigInt(), false,
+				)
+				if err != nil {
+					logger.WithError(err).Error("Failed to execute blockchain trade")
+					return
+				}
+				
+				logger.WithField("tx_hash", tx.Hash().Hex()).Info("Blockchain trade executed")
+			}(fill)
+		}
+	}
+}
+
 // handleMatchingEvents 处理撮合引擎事件
-func handleMatchingEvents(engine *matching.MatchingEngine, wsHub *websocket.Hub, logger *logrus.Logger) {
+func handleMatchingEvents(engine *matching.MatchingEngine, wsHub *websocket.Hub, blockchainClient *blockchain.Client, logger *logrus.Logger) {
 	for event := range engine.GetEventChannel() {
 		switch event.Type {
 		case "order_added":

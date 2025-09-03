@@ -1,9 +1,10 @@
 import React from 'react'
 import { useWallet } from '../hooks/useWallet'
+import { NETWORK_CONFIG } from '../config/contracts'
 import './Navbar.css'
 
 const Navbar = () => {
-  const { account, connectWallet, disconnectWallet } = useWallet()
+  const { account, connectWallet, disconnectWallet, isCorrectNetwork, networkError } = useWallet()
 
   const formatAddress = (address) => {
     if (!address) return ''
@@ -26,6 +27,14 @@ const Navbar = () => {
         <div className="navbar-wallet">
           {account ? (
             <div className="wallet-connected">
+              <div className="network-status">
+                <span className={`network-indicator ${isCorrectNetwork ? 'connected' : 'error'}`}>
+                  ●
+                </span>
+                <span className="network-name">
+                  {isCorrectNetwork ? NETWORK_CONFIG.name : 'Wrong Network'}
+                </span>
+              </div>
               <span className="wallet-address">{formatAddress(account)}</span>
               <button 
                 className="btn btn-outline"

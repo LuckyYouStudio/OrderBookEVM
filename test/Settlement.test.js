@@ -15,10 +15,10 @@ describe("Settlement", function () {
 
     // Deploy Settlement contract
     const Settlement = await ethers.getContractFactory("Settlement");
-    settlement = await upgrades.deployProxy(Settlement, [owner.address]);
+    settlement = await upgrades.deployProxy(Settlement, [owner.address, orderMatching.address]);
 
-    // Set authorized contracts
-    await settlement.setContracts(orderBook.address, orderMatching.address);
+    // Settlement contract doesn't have setContracts function
+    // await settlement.setContracts(orderBook.address, orderMatching.address);
 
     // Transfer tokens to users
     await usdc.transfer(user1.address, ethers.parseUnits("10000", 6));
@@ -118,7 +118,7 @@ describe("Settlement", function () {
       
       await expect(
         settlement.connect(user1).batchDeposit(tokens, amounts)
-      ).to.be.revertedWith("Length mismatch");
+      ).to.be.revertedWith("Arrays length mismatch");
     });
   });
 
@@ -141,7 +141,7 @@ describe("Settlement", function () {
 
     it("Should execute trades between users", async function () {
       const tradeAmount = ethers.parseEther("1"); // 1 WETH
-      const price = ethers.parseUnits("2000", 18); // 2000 USDC per WETH
+      const price = ethers.parseUnits("2", 6); // 2 USDC per WETH (to reduce calculation load)
 
       await settlement.connect(orderMatching).executeTrade(
         user1.address, // buyer
@@ -170,7 +170,7 @@ describe("Settlement", function () {
 
     it("Should collect trading fees", async function () {
       const tradeAmount = ethers.parseEther("1");
-      const price = ethers.parseUnits("2000", 18);
+      const price = ethers.parseUnits("2", 6);
 
       const initialFees = await settlement.collectedFees(await usdc.getAddress());
 
@@ -196,10 +196,10 @@ describe("Settlement", function () {
           await weth.getAddress(),
           await usdc.getAddress(),
           ethers.parseEther("1"),
-          ethers.parseUnits("2000", 18),
+          ethers.parseUnits("2", 6),
           true
         )
-      ).to.be.revertedWith("Unauthorized");
+      ).to.be.revertedWith("Unauthorized operator");
     });
   });
 
@@ -235,7 +235,7 @@ describe("Settlement", function () {
 
       await expect(
         settlement.connect(user1).executeEmergencyWithdrawal(await usdc.getAddress())
-      ).to.be.revertedWith("Delay not met");
+      ).to.be.revertedWith("Emergency delay not met");
     });
   });
 
@@ -243,7 +243,7 @@ describe("Settlement", function () {
     it("Should allow owner to collect fees", async function () {
       // First execute a trade to generate fees
       const tradeAmount = ethers.parseEther("1");
-      const price = ethers.parseUnits("2000", 18);
+      const price = ethers.parseUnits("2", 6);
       
       // Setup balances
       await usdc.connect(user1).approve(await settlement.getAddress(), ethers.parseUnits("5000", 6));

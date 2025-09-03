@@ -60,6 +60,35 @@
   gap: 12px;
 }
 
+.network-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 6px 12px;
+  border-radius: 6px;
+}
+
+.network-indicator {
+  font-size: 12px;
+  animation: pulse 2s infinite;
+}
+
+.network-indicator.connected {
+  color: #10b981;
+}
+
+.network-indicator.error {
+  color: #ef4444;
+}
+
+.network-name {
+  font-size: 12px;
+  color: #cbd5e1;
+  font-weight: 500;
+}
+
 .wallet-address {
   background: rgba(59, 130, 246, 0.1);
   border: 1px solid rgba(59, 130, 246, 0.3);
@@ -68,6 +97,11 @@
   border-radius: 8px;
   font-family: 'Monaco', 'Menlo', monospace;
   font-size: 14px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 @media (max-width: 768px) {

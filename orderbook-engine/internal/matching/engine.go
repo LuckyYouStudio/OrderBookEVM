@@ -43,11 +43,12 @@ type PriceLevel struct {
 	isBuy  bool
 }
 
-// PriceLevelQueue 同一价格的订单队列
+// PriceLevelQueue 同一价格的订单队列（价格-时间优先）
 type PriceLevelQueue struct {
-	Price  decimal.Decimal
-	Orders []*types.Order
-	Total  decimal.Decimal
+	Price     decimal.Decimal
+	Orders    []*types.Order // 按时间顺序排列（FIFO）
+	Total     decimal.Decimal
+	OrdersMap map[uuid.UUID]*types.Order // 快速查找
 }
 
 // PriceHeap 价格堆（买单降序，卖单升序）
@@ -237,7 +238,7 @@ func (me *MatchingEngine) canMatch(order *types.Order, price decimal.Decimal) bo
 	return order.Price.LessThanOrEqual(price)
 }
 
-// addOrderToBook 将订单添加到订单簿
+// addOrderToBook 将订单添加到订单簿（价格-时间优先）
 func (me *MatchingEngine) addOrderToBook(orderBook *OrderBook, order *types.Order) {
 	orderBook.Orders[order.ID] = order
 
@@ -252,9 +253,10 @@ func (me *MatchingEngine) addOrderToBook(orderBook *OrderBook, order *types.Orde
 	queue, exists := targetSide.levels[priceStr]
 	if !exists {
 		queue = &PriceLevelQueue{
-			Price:  order.Price,
-			Orders: []*types.Order{},
-			Total:  decimal.Zero,
+			Price:     order.Price,
+			Orders:    []*types.Order{},
+			Total:     decimal.Zero,
+			OrdersMap: make(map[uuid.UUID]*types.Order),
 		}
 		targetSide.levels[priceStr] = queue
 		heap.Push(&targetSide.heap, PriceLevelItem{
@@ -263,9 +265,19 @@ func (me *MatchingEngine) addOrderToBook(orderBook *OrderBook, order *types.Orde
 		})
 	}
 
+	// 按时间顺序添加（FIFO）
 	queue.Orders = append(queue.Orders, order)
+	queue.OrdersMap[order.ID] = order
 	queue.Total = queue.Total.Add(order.GetRemainingAmount())
 	order.Status = types.OrderStatusOpen
+
+	me.logger.WithFields(logrus.Fields{
+		"order_id":     order.ID.String(),
+		"price":        order.Price.String(),
+		"side":         order.Side,
+		"trading_pair": order.TradingPair,
+		"timestamp":    order.CreatedAt,
+	}).Debug("Added order to book with price-time priority")
 }
 
 // removeOrderFromBook 从订单簿移除订单
@@ -349,6 +361,60 @@ func (me *MatchingEngine) getPriceLevels(priceLevel *PriceLevel, depth int) []ty
 	}
 	
 	return levels
+}
+
+// GetBestPrice 获取最佳价格（价格优先）
+func (me *MatchingEngine) GetBestPrice(tradingPair string, side types.OrderSide) (decimal.Decimal, bool) {
+	me.mu.RLock()
+	defer me.mu.RUnlock()
+
+	orderBook, exists := me.orderBooks[tradingPair]
+	if !exists {
+		return decimal.Zero, false
+	}
+
+	var targetSide *PriceLevel
+	if side == types.OrderSideBuy {
+		targetSide = orderBook.Bids
+	} else {
+		targetSide = orderBook.Asks
+	}
+
+	if targetSide.heap.Len() == 0 {
+		return decimal.Zero, false
+	}
+
+	bestPrice := targetSide.heap.Peek()
+	return bestPrice.Price, true
+}
+
+// GetOrdersAtPrice 获取指定价格的所有订单（按时间顺序）
+func (me *MatchingEngine) GetOrdersAtPrice(tradingPair string, side types.OrderSide, price decimal.Decimal) []*types.Order {
+	me.mu.RLock()
+	defer me.mu.RUnlock()
+
+	orderBook, exists := me.orderBooks[tradingPair]
+	if !exists {
+		return nil
+	}
+
+	var targetSide *PriceLevel
+	if side == types.OrderSideBuy {
+		targetSide = orderBook.Bids
+	} else {
+		targetSide = orderBook.Asks
+	}
+
+	priceStr := price.String()
+	queue, exists := targetSide.levels[priceStr]
+	if !exists {
+		return nil
+	}
+
+	// 返回按时间顺序排列的订单副本
+	orders := make([]*types.Order, len(queue.Orders))
+	copy(orders, queue.Orders)
+	return orders
 }
 
 // PriceHeap 实现 heap.Interface

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/security/PausableUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
+import "@openzeppelin/contracts-upgradeable/utils/cryptography/EIP712Upgradeable.sol";
 
 /**
  * @title Settlement - 链上清算合约
@@ -16,7 +16,7 @@ import "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
  */
 contract Settlement is 
     Initializable, 
-    EIP712,
+    EIP712Upgradeable,
     OwnableUpgradeable, 
     PausableUpgradeable, 
     ReentrancyGuardUpgradeable 
@@ -65,6 +65,7 @@ contract Settlement is
     mapping(address => mapping(address => uint256)) public userBalances;
     mapping(address => uint256) public userNonces;
     mapping(bytes32 => bool) public settledOrders;
+    mapping(bytes32 => uint256) public orderFilledAmounts; // 订单已成交量（防超填）
     mapping(address => uint256) public collectedFees;
     
     uint256 public makerFee; // 做市商费率（基点）
@@ -97,6 +98,17 @@ contract Settlement is
         uint256 amount,
         uint8 takerSide
     );
+    
+    event SingleTradeExecuted(
+        address indexed taker,
+        address indexed maker,
+        address baseToken,
+        address quoteToken,
+        uint256 amount,
+        uint256 price,
+        bool isBuy
+    );
+    
     event EmergencyWithdrawalRequested(address indexed user, uint256 timestamp);
     event EmergencyWithdrawalExecuted(address indexed user, address indexed token, uint256 amount);
     
@@ -148,6 +160,66 @@ contract Settlement is
         emit Withdrawal(msg.sender, token, amount);
     }
 
+    /**
+     * @dev 执行单笔交易
+     */
+    function executeTrade(
+        address taker,
+        address maker,
+        address baseToken,
+        address quoteToken,
+        uint256 amount,
+        uint256 price,
+        bool isBuy
+    ) external onlyOperator whenNotPaused nonReentrant {
+        require(taker != address(0) && maker != address(0), "Invalid addresses");
+        require(baseToken != address(0) && quoteToken != address(0), "Invalid tokens");
+        require(amount > 0 && price > 0, "Invalid amount or price");
+        
+        // 计算报价代币数量：amount(基础代币) * price / 1e18
+        // 这里假设价格已经按照正确的精度进行了调整
+        uint256 quoteAmount = amount * price / 1e18;
+        if (isBuy) {
+            // Taker是买方，Maker是卖方
+            uint256 takerFeeAmount = (quoteAmount * takerFee) / BASIS_POINTS;  // 买方按报价代币收费
+            uint256 makerFeeAmount = (amount * makerFee) / BASIS_POINTS;       // 卖方按基础代币收费
+            
+            require(userBalances[taker][quoteToken] >= quoteAmount + takerFeeAmount, "Insufficient quote balance");
+            require(userBalances[maker][baseToken] >= amount + makerFeeAmount, "Insufficient base balance");
+            
+            // 转移资产
+            userBalances[taker][quoteToken] -= (quoteAmount + takerFeeAmount);
+            userBalances[taker][baseToken] += amount;
+            
+            userBalances[maker][baseToken] -= (amount + makerFeeAmount);
+            userBalances[maker][quoteToken] += quoteAmount;
+            // 收取手续费
+            collectedFees[quoteToken] += takerFeeAmount;  // 买方手续费（报价代币）
+            collectedFees[baseToken] += makerFeeAmount;   // 卖方手续费（基础代币）
+            
+        } else {
+            // Taker是卖方，Maker是买方
+            uint256 takerFeeAmount = (amount * takerFee) / BASIS_POINTS;           // 卖方按基础代币收费
+            uint256 makerFeeAmount = (quoteAmount * makerFee) / BASIS_POINTS;      // 买方按报价代币收费
+            
+            require(userBalances[taker][baseToken] >= amount + takerFeeAmount, "Insufficient base balance");
+            require(userBalances[maker][quoteToken] >= quoteAmount + makerFeeAmount, "Insufficient quote balance");
+            
+            // 转移资产
+            userBalances[taker][baseToken] -= (amount + takerFeeAmount);
+            userBalances[taker][quoteToken] += quoteAmount;
+            
+            userBalances[maker][quoteToken] -= (quoteAmount + makerFeeAmount);
+            userBalances[maker][baseToken] += amount;
+            
+            // 收取手续费
+            collectedFees[baseToken] += takerFeeAmount;   // 卖方手续费（基础代币）
+            collectedFees[quoteToken] += makerFeeAmount;  // 买方手续费（报价代币）
+        }
+        
+        emit SingleTradeExecuted(taker, maker, baseToken, quoteToken, amount, price, isBuy);
+    }
+    
     /**
      * @dev 批量结算交易
      */
@@ -210,7 +282,7 @@ contract Settlement is
     }
 
     /**
-     * @dev 验证和执行成交
+     * @dev 验证和执行成交（支持部分成交，防重放和超填）
      */
     function _verifyAndExecuteFill(
         Order memory takerOrder,
@@ -222,8 +294,16 @@ contract Settlement is
         bytes32 takerHash = _hashOrder(takerOrder);
         bytes32 makerHash = _hashOrder(makerOrder);
         
-        require(!settledOrders[takerHash], "Taker order already settled");
-        require(!settledOrders[makerHash], "Maker order already settled");
+        // 防重放：检查订单是否完全成交
+        require(!settledOrders[takerHash], "Taker order fully settled");
+        require(!settledOrders[makerHash], "Maker order fully settled");
+        
+        // 防超填：检查成交量是否超过订单剩余量
+        uint256 takerFilled = orderFilledAmounts[takerHash];
+        uint256 makerFilled = orderFilledAmounts[makerHash];
+        
+        require(takerFilled + fill.amount <= takerOrder.amount, "Taker order overfill");
+        require(makerFilled + fill.amount <= makerOrder.amount, "Maker order overfill");
         
         // 验证签名
         _verifyOrderSignature(takerOrder, takerHash, _findSignature(takerHash, settlement, true));
@@ -232,18 +312,30 @@ contract Settlement is
         // 验证订单匹配条件
         _validateOrderMatch(takerOrder, makerOrder, fill);
         
-        // 验证用户nonce
-        require(userNonces[takerOrder.userAddress] == takerOrder.nonce, "Invalid taker nonce");
-        require(userNonces[makerOrder.userAddress] == makerOrder.nonce, "Invalid maker nonce");
+        // 验证用户nonce（仅首次成交时检查）
+        if (takerFilled == 0) {
+            require(userNonces[takerOrder.userAddress] == takerOrder.nonce, "Invalid taker nonce");
+        }
+        if (makerFilled == 0) {
+            require(userNonces[makerOrder.userAddress] == makerOrder.nonce, "Invalid maker nonce");
+        }
         
         // 执行结算
         _executeFill(takerOrder, makerOrder, fill);
         
-        // 更新状态
-        settledOrders[takerHash] = true;
-        settledOrders[makerHash] = true;
-        userNonces[takerOrder.userAddress]++;
-        userNonces[makerOrder.userAddress]++;
+        // 更新已成交量
+        orderFilledAmounts[takerHash] += fill.amount;
+        orderFilledAmounts[makerHash] += fill.amount;
+        
+        // 标记完全成交的订单
+        if (orderFilledAmounts[takerHash] == takerOrder.amount) {
+            settledOrders[takerHash] = true;
+            userNonces[takerOrder.userAddress]++;
+        }
+        if (orderFilledAmounts[makerHash] == makerOrder.amount) {
+            settledOrders[makerHash] = true;
+            userNonces[makerOrder.userAddress]++;
+        }
         
         emit TradeExecuted(
             takerHash,
@@ -487,5 +579,94 @@ contract Settlement is
 
     function isOrderSettled(bytes32 orderHash) external view returns (bool) {
         return settledOrders[orderHash];
+    }
+
+    /**
+     * @dev 获取订单已成交量
+     * @param orderHash 订单哈希
+     * @return 已成交量
+     */
+    function getOrderFilledAmount(bytes32 orderHash) external view returns (uint256) {
+        return orderFilledAmounts[orderHash];
+    }
+
+    /**
+     * @dev 获取订单剩余量
+     * @param orderHash 订单哈希
+     * @param totalAmount 订单总量
+     * @return 剩余量
+     */
+    function getOrderRemainingAmount(bytes32 orderHash, uint256 totalAmount) external view returns (uint256) {
+        uint256 filled = orderFilledAmounts[orderHash];
+        return filled >= totalAmount ? 0 : totalAmount - filled;
+    }
+
+    /**
+     * @dev 取消订单（链下签名取消）
+     * @param order 订单信息
+     * @param signature 取消签名
+     */
+    function cancelOrder(Order calldata order, bytes calldata signature) external {
+        bytes32 orderHash = _hashOrder(order);
+        
+        require(!settledOrders[orderHash], "Order already settled");
+        require(order.userAddress == msg.sender, "Not order owner");
+        
+        // 标记为已结算（取消也算结算）
+        settledOrders[orderHash] = true;
+        
+        emit OrderCancelled(orderHash, order.userAddress);
+    }
+
+    // 添加取消订单事件
+    event OrderCancelled(bytes32 indexed orderHash, address indexed user);
+
+    /**
+     * @dev 批量存入代币
+     * @param tokens 代币地址数组
+     * @param amounts 存入数量数组
+     */
+    function batchDeposit(
+        address[] calldata tokens,
+        uint256[] calldata amounts
+    ) external whenNotPaused nonReentrant {
+        require(tokens.length == amounts.length, "Arrays length mismatch");
+        require(tokens.length > 0, "Empty arrays");
+        require(tokens.length <= 10, "Too many tokens"); // 限制批量操作大小
+        
+        for (uint256 i = 0; i < tokens.length; i++) {
+            require(tokens[i] != address(0), "Invalid token address");
+            require(amounts[i] > 0, "Invalid amount");
+            
+            IERC20(tokens[i]).safeTransferFrom(msg.sender, address(this), amounts[i]);
+            userBalances[msg.sender][tokens[i]] += amounts[i];
+            
+            emit Deposit(msg.sender, tokens[i], amounts[i]);
+        }
+    }
+
+    /**
+     * @dev 批量提取代币
+     * @param tokens 代币地址数组
+     * @param amounts 提取数量数组
+     */
+    function batchWithdraw(
+        address[] calldata tokens,
+        uint256[] calldata amounts
+    ) external whenNotPaused nonReentrant {
+        require(tokens.length == amounts.length, "Arrays length mismatch");
+        require(tokens.length > 0, "Empty arrays");
+        require(tokens.length <= 10, "Too many tokens"); // 限制批量操作大小
+        
+        for (uint256 i = 0; i < tokens.length; i++) {
+            require(tokens[i] != address(0), "Invalid token address");
+            require(amounts[i] > 0, "Invalid amount");
+            require(userBalances[msg.sender][tokens[i]] >= amounts[i], "Insufficient balance");
+            
+            userBalances[msg.sender][tokens[i]] -= amounts[i];
+            IERC20(tokens[i]).safeTransfer(msg.sender, amounts[i]);
+            
+            emit Withdrawal(msg.sender, tokens[i], amounts[i]);
+        }
     }
 }

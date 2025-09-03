@@ -28,46 +28,41 @@ async function main() {
   // Deploy Settlement
   console.log("\nDeploying Settlement...");
   const Settlement = await ethers.getContractFactory("Settlement");
-  const settlement = await upgrades.deployProxy(Settlement, [deployer.address], {
+  const settlement = await upgrades.deployProxy(Settlement, [deployer.address, deployer.address], {
     initializer: "initialize"
   });
   await settlement.waitForDeployment();
   console.log("Settlement deployed to:", await settlement.getAddress());
 
-  // Deploy OrderMatching
-  console.log("\nDeploying OrderMatching...");
-  const OrderMatching = await ethers.getContractFactory("OrderMatching");
-  const orderMatching = await upgrades.deployProxy(
-    OrderMatching,
-    [await orderBook.getAddress(), await settlement.getAddress()],
-    { initializer: "initialize" }
-  );
-  await orderMatching.waitForDeployment();
-  console.log("OrderMatching deployed to:", await orderMatching.getAddress());
+  // OrderMatching contract was removed, using zero address for now
+  const orderMatchingAddress = ethers.ZeroAddress;
+  console.log("OrderMatching address set to:", orderMatchingAddress, "(disabled)");
 
   // Set contract addresses
   console.log("\nSetting contract addresses...");
   
   await orderBook.setContracts(
-    await orderMatching.getAddress(),
+    orderMatchingAddress,
     await settlement.getAddress(),
     await tokenRegistry.getAddress()
   );
   console.log("OrderBook contracts set");
 
-  await settlement.setContracts(
-    await orderBook.getAddress(),
-    await orderMatching.getAddress()
-  );
-  console.log("Settlement contracts set");
+  // Settlement doesn't have setContracts function
+  // await settlement.setContracts(
+  //   await orderBook.getAddress(),
+  //   orderMatchingAddress
+  // );
+  console.log("Settlement contracts set (no setContracts function)");
 
   // Deploy mock tokens for testing
+  let usdc, weth;
   if (network.name === "hardhat" || network.name === "localhost") {
     console.log("\nDeploying mock tokens...");
     
     const MockERC20 = await ethers.getContractFactory("MockERC20");
     
-    const usdc = await MockERC20.deploy(
+    usdc = await MockERC20.deploy(
       "USD Coin",
       "USDC",
       6,
@@ -76,7 +71,7 @@ async function main() {
     await usdc.waitForDeployment();
     console.log("Mock USDC deployed to:", await usdc.getAddress());
 
-    const weth = await MockERC20.deploy(
+    weth = await MockERC20.deploy(
       "Wrapped Ether",
       "WETH",
       18,
@@ -119,7 +114,7 @@ async function main() {
   console.log("TokenRegistry:", await tokenRegistry.getAddress());
   console.log("OrderBook:", await orderBook.getAddress());
   console.log("Settlement:", await settlement.getAddress());
-  console.log("OrderMatching:", await orderMatching.getAddress());
+  console.log("OrderMatching:", orderMatchingAddress, "(disabled)");
   
   if (network.name === "hardhat" || network.name === "localhost") {
     console.log("Mock USDC:", await usdc.getAddress());
