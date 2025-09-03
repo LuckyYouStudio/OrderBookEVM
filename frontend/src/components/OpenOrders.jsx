@@ -6,48 +6,50 @@ const OpenOrders = ({ connected }) => {
   const [activeTab, setActiveTab] = useState('open')
   const [loading, setLoading] = useState(false)
 
-  // Mock orders data
+  // Fetch real orders from backend API
   useEffect(() => {
-    if (connected) {
-      const mockOrders = [
-        {
-          id: '1',
-          pair: 'WETH/USDC',
-          side: 'buy',
-          type: 'limit',
-          amount: '0.5000',
-          price: '1995.50',
-          filled: '0.0000',
-          status: 'open',
-          timestamp: Date.now() - 300000,
-        },
-        {
-          id: '2',
-          pair: 'WETH/USDC',
-          side: 'sell',
-          type: 'limit',
-          amount: '1.2500',
-          price: '2055.00',
-          filled: '0.3750',
-          status: 'partially_filled',
-          timestamp: Date.now() - 600000,
-        },
-        {
-          id: '3',
-          pair: 'WETH/USDC',
-          side: 'buy',
-          type: 'market',
-          amount: '0.2500',
-          price: '2048.75',
-          filled: '0.2500',
-          status: 'filled',
-          timestamp: Date.now() - 1800000,
-        },
-      ]
-      setOrders(mockOrders)
-    } else {
-      setOrders([])
+    const fetchOrders = async () => {
+      if (connected && window.ethereum?.selectedAddress) {
+        setLoading(true)
+        try {
+          const userAddress = window.ethereum.selectedAddress
+          const response = await fetch(`http://localhost:8085/api/v1/orders?user_address=${userAddress}`)
+          
+          if (response.ok) {
+            const data = await response.json()
+            // Transform backend data to frontend format
+            const transformedOrders = (data.orders || []).map(order => ({
+              id: order.id,
+              pair: order.trading_pair,
+              side: order.side,
+              type: order.type,
+              amount: order.amount.toString(),
+              price: order.price.toString(),
+              filled: order.filled_amount?.toString() || '0',
+              status: order.status,
+              timestamp: new Date(order.created_at).getTime(),
+            }))
+            setOrders(transformedOrders)
+          } else {
+            console.error('Failed to fetch orders:', await response.text())
+            setOrders([])
+          }
+        } catch (error) {
+          console.error('Error fetching orders:', error)
+          setOrders([])
+        } finally {
+          setLoading(false)
+        }
+      } else {
+        setOrders([])
+      }
     }
+
+    fetchOrders()
+    
+    // Poll for updates every 5 seconds
+    const interval = setInterval(fetchOrders, 5000)
+    return () => clearInterval(interval)
   }, [connected])
 
   const formatTime = (timestamp) => {
@@ -105,17 +107,30 @@ const OpenOrders = ({ connected }) => {
     }
   })
 
-  const handleCancelOrder = (orderId) => {
+  const handleCancelOrder = async (orderId) => {
     setLoading(true)
-    // Simulate API call
-    setTimeout(() => {
-      setOrders(orders.map(order => 
-        order.id === orderId 
-          ? { ...order, status: 'cancelled' }
-          : order
-      ))
+    try {
+      const response = await fetch(`http://localhost:8085/api/v1/orders/${orderId}`, {
+        method: 'DELETE'
+      })
+      
+      if (response.ok) {
+        // Update local state to reflect cancelled order
+        setOrders(orders.map(order => 
+          order.id === orderId 
+            ? { ...order, status: 'cancelled' }
+            : order
+        ))
+      } else {
+        console.error('Failed to cancel order:', await response.text())
+        alert('Failed to cancel order')
+      }
+    } catch (error) {
+      console.error('Error cancelling order:', error)
+      alert('Error cancelling order')
+    } finally {
       setLoading(false)
-    }, 1000)
+    }
   }
 
   const calculateProgress = (filled, total) => {

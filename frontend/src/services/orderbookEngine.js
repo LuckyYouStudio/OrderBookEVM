@@ -4,7 +4,7 @@
  */
 
 class OrderBookEngineAPI {
-  constructor(baseURL = 'http://localhost:8080') {
+  constructor(baseURL = 'http://localhost:8085') {
     this.baseURL = baseURL;
     this.wsConnection = null;
     this.eventListeners = new Map();

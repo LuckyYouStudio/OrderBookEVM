@@ -11,7 +11,6 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/shopspring/decimal"
 	"golang.org/x/crypto/sha3"
 
 	"orderbook-engine/internal/types"
@@ -35,14 +34,15 @@ func NewOrderSigner(chainID *big.Int, contractAddress common.Address) *OrderSign
 	nameHash := crypto.Keccak256Hash([]byte("OrderBook DEX"))    // DEX名称
 	versionHash := crypto.Keccak256Hash([]byte("1.0"))           // 版本号
 	
-	// 生成域分隔符哈希
-	domainSeparator := crypto.Keccak256Hash(
-		domainTypeHash.Bytes(),
-		nameHash.Bytes(),
-		versionHash.Bytes(),
-		common.LeftPadBytes(chainID.Bytes(), 32),  // 链 ID 填充到32字节
-		contractAddress.Bytes(),
-	)
+	// 按照EIP-712标准正确计算域分隔符哈希
+	// 需要直接连接各个哈希值和数据，而不是分别传递给Keccak256Hash
+	var domainData []byte
+	domainData = append(domainData, domainTypeHash.Bytes()...)
+	domainData = append(domainData, nameHash.Bytes()...)
+	domainData = append(domainData, versionHash.Bytes()...)
+	domainData = append(domainData, common.LeftPadBytes(chainID.Bytes(), 32)...)
+	domainData = append(domainData, common.LeftPadBytes(contractAddress.Bytes(), 32)...)
+	domainSeparator := crypto.Keccak256Hash(domainData)
 
 	return &OrderSigner{
 		chainID: chainID,
@@ -55,14 +55,13 @@ func NewOrderSigner(chainID *big.Int, contractAddress common.Address) *OrderSign
 // @param order 已签名订单
 // @return 订单哈希值
 func (s *OrderSigner) HashOrder(order *types.SignedOrder) (common.Hash, error) {
-	// 订单类型哈希，定义订单结构
+	// 订单类型哈希，定义订单结构 - 匹配Solidity合约
 	orderTypeHash := crypto.Keccak256Hash([]byte(
-		"Order(address userAddress,string tradingPair,address baseToken,address quoteToken,uint8 side,uint8 orderType,uint256 price,uint256 amount,uint256 expiresAt,uint256 nonce)",
+		"Order(address userAddress,address baseToken,address quoteToken,uint8 side,uint8 orderType,uint256 price,uint256 amount,uint256 expiresAt,uint256 nonce)",
 	))
 
 	// 将订单数据转换为字节数组
 	userAddress := common.HexToAddress(order.UserAddress)          // 用户地址
-	tradingPairHash := crypto.Keccak256Hash([]byte(order.TradingPair)) // 交易对哈希
 	baseToken := common.HexToAddress(order.BaseToken)              // 基础代币地址
 	quoteToken := common.HexToAddress(order.QuoteToken)            // 报价代币地址
 	
@@ -83,9 +82,9 @@ func (s *OrderSigner) HashOrder(order *types.SignedOrder) (common.Hash, error) {
 		orderType = 3
 	}
 
-	// 将小数转换为wei单位（18位小数）
-	price := order.Price.Mul(decimal.NewFromInt(1e18)).BigInt()   // 价格转换
-	amount := order.Amount.Mul(decimal.NewFromInt(1e18)).BigInt() // 数量转换
+	// 价格和数量直接使用decimal的BigInt值（前端已处理小数位）
+	price := order.Price.BigInt()   // 价格不需要额外转换
+	amount := order.Amount.BigInt() // 数量不需要额外转换
 	
 	// 过期时间转换为Unix时间戳
 	expiresAt := big.NewInt(0)
@@ -98,27 +97,26 @@ func (s *OrderSigner) HashOrder(order *types.SignedOrder) (common.Hash, error) {
 
 	// 计算结构体哈希
 	// 按照订单类型定义的顺序组装数据
-	structHash := crypto.Keccak256Hash(
-		orderTypeHash.Bytes(),
-		userAddress.Bytes(),
-		tradingPairHash.Bytes(),
-		baseToken.Bytes(),
-		quoteToken.Bytes(),
-		common.LeftPadBytes([]byte{side}, 32),         // 填充到32字节
-		common.LeftPadBytes([]byte{orderType}, 32),    // 填充到32字节
-		common.LeftPadBytes(price.Bytes(), 32),        // 填充到32字节
-		common.LeftPadBytes(amount.Bytes(), 32),       // 填充到32字节
-		common.LeftPadBytes(expiresAt.Bytes(), 32),    // 填充到32字节
-		common.LeftPadBytes(nonce.Bytes(), 32),        // 填充到32字节
-	)
+	var structData []byte
+	structData = append(structData, orderTypeHash.Bytes()...)
+	structData = append(structData, common.LeftPadBytes(userAddress.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(baseToken.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(quoteToken.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes([]byte{side}, 32)...)
+	structData = append(structData, common.LeftPadBytes([]byte{orderType}, 32)...)
+	structData = append(structData, common.LeftPadBytes(price.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(amount.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(expiresAt.Bytes(), 32)...)
+	structData = append(structData, common.LeftPadBytes(nonce.Bytes(), 32)...)
+	structHash := crypto.Keccak256Hash(structData)
 
 	// 生成EIP-712类型化数据哈希
 	// \x19\x01 是EIP-712的魔数前缀
-	return crypto.Keccak256Hash(
-		[]byte("\x19\x01"),       // EIP-712前缀
-		s.domainSeparator[:],      // 域分隔符
-		structHash.Bytes(),        // 结构体哈希
-	), nil
+	var finalData []byte
+	finalData = append(finalData, []byte("\x19\x01")...)
+	finalData = append(finalData, s.domainSeparator[:]...)
+	finalData = append(finalData, structHash.Bytes()...)
+	return crypto.Keccak256Hash(finalData), nil
 }
 
 // VerifyOrderSignature 验证订单签名

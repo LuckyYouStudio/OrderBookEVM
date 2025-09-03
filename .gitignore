@@ -197,3 +197,37 @@ docker-compose.override.yml
 
 # Kubernetes
 *.kubeconfig
+
+# Debug and test files (temporary)
+debug-*.js
+debug-*.go
+test-*.js
+test-*.go
+fix-*.js
+create-*.js
+check-*.js
+match-*.js
+init-*.js
+*-detailed.js
+*-signature*.js
+*-trading*.js
+*-working*.js
+*-eip712*.js
+
+# Temporary development files
+nul
+*.txt
+setup-*.sql
+
+# Status and optimization reports
+*_REPORT.md
+*_STATUS.md
+*_GUIDE.md
+
+# Go debug and test files
+orderbook-engine/debug_*.go
+orderbook-engine/test_*.go
+orderbook-engine/*_test_*.go
+
+# Main variants and experimental files
+orderbook-engine/cmd/main_*.go

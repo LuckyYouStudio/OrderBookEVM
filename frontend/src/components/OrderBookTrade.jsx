@@ -20,12 +20,16 @@ const OrderBookTrade = () => {
   const [buyOrders, setBuyOrders] = useState([])
   const [sellOrders, setSellOrders] = useState([])
   const [myOrders, setMyOrders] = useState([])
+  const [trades, setTrades] = useState([])
   const [bestBid, setBestBid] = useState('0')
   const [bestAsk, setBestAsk] = useState('0')
   const [loading, setLoading] = useState(false)
   const [message, setMessage] = useState('')
-  const [useEngine, setUseEngine] = useState(false)
-  const [engineStatus, setEngineStatus] = useState('disconnected')
+  const [useEngine, setUseEngine] = useState(true)
+  const [engineStatus, setEngineStatus] = useState('connecting')
+  const [wsConnection, setWsConnection] = useState(null)
+  const [lastUpdate, setLastUpdate] = useState('')
+  const [activeOrderTab, setActiveOrderTab] = useState('orders') // orders, trades, history
 
   // 代币对配置
   const pairs = [
@@ -48,6 +52,90 @@ const OrderBookTrade = () => {
     })
   }, [])
 
+  // 自动初始化引擎连接
+  useEffect(() => {
+    const autoInitEngine = async () => {
+      try {
+        setMessage('🔄 正在连接撮合引擎...')
+        
+        // 健康检查
+        const healthResponse = await fetch('http://localhost:8084/api/v1/health')
+        if (!healthResponse.ok) {
+          throw new Error('撮合引擎不可用')
+        }
+        
+        // 连接WebSocket进行实时更新
+        connectWebSocket()
+        
+        // 初始加载数据
+        await loadOrderbook()
+        await loadEngineOrders()
+        await loadTrades()
+        
+        setMessage('✅ 撮合引擎已自动连接')
+        
+      } catch (error) {
+        console.error('自动引擎连接失败:', error)
+        setEngineStatus('disconnected')
+        setMessage(`❌ 引擎连接失败: ${error.message}`)
+        setUseEngine(false)
+      }
+    }
+
+    // 延迟一秒后自动连接，确保组件完全加载
+    setTimeout(autoInitEngine, 1000)
+  }, [])
+
+  // WebSocket连接管理
+  const connectWebSocket = () => {
+    if (wsConnection) {
+      wsConnection.close()
+    }
+
+    try {
+      // 尝试连接WebSocket (如果引擎支持)
+      const ws = new WebSocket('ws://localhost:8084/ws')
+      
+      ws.onopen = () => {
+        console.log('WebSocket连接成功')
+        setEngineStatus('connected')
+        setMessage('✅ 实时连接已建立')
+        setLastUpdate(new Date().toLocaleTimeString())
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'orderbook_update') {
+            updateOrderBookFromEngine(data.data)
+            setLastUpdate(new Date().toLocaleTimeString())
+          } else if (data.type === 'trade_update') {
+            setMessage(`🔔 新交易: ${data.data.amount} ETH @ ${data.data.price} USDC`)
+            setTimeout(() => setMessage(''), 5000)
+          }
+        } catch (err) {
+          console.error('WebSocket消息解析失败:', err)
+        }
+      }
+
+      ws.onclose = () => {
+        console.log('WebSocket连接关闭')
+        setEngineStatus('disconnected')
+        setWsConnection(null)
+      }
+
+      ws.onerror = (error) => {
+        console.error('WebSocket错误:', error)
+        setEngineStatus('disconnected')
+      }
+
+      setWsConnection(ws)
+    } catch (err) {
+      console.error('WebSocket连接失败:', err)
+      setEngineStatus('disconnected')
+    }
+  }
+
   // OrderBook Engine 集成
   const initializeEngine = async () => {
     try {
@@ -55,39 +143,21 @@ const OrderBookTrade = () => {
       setMessage('正在连接OrderBook引擎...')
       
       // 健康检查
-      const health = await orderbookEngineAPI.healthCheck()
-      if (!health) {
+      const healthResponse = await fetch('http://localhost:8084/api/v1/health')
+      if (!healthResponse.ok) {
         throw new Error('OrderBook引擎不可用')
       }
       
-      // 设置WebSocket事件监听
-      orderbookEngineAPI.on('connected', () => {
-        setEngineStatus('connected')
-        setMessage('OrderBook引擎已连接')
-        
-        // 订阅当前交易对
-        const tradingPair = `${selectedPair.tokenA}-${selectedPair.tokenB}`
-        orderbookEngineAPI.subscribe(tradingPair)
-      })
+      // 连接WebSocket进行实时更新
+      connectWebSocket()
       
-      orderbookEngineAPI.on('disconnected', () => {
-        setEngineStatus('disconnected')
-        setMessage('OrderBook引擎已断开')
-      })
+      // 初始加载数据
+      await loadOrderbook()
+      await loadEngineOrders()
+      await loadTrades()
       
-      orderbookEngineAPI.on('orderbook_update', (data) => {
-        console.log('OrderBook update:', data)
-        updateOrderBookFromEngine(data)
-      })
-      
-      orderbookEngineAPI.on('trade_update', (data) => {
-        console.log('Trade update:', data)
-        setMessage(`新交易: ${data.trade.amount} @ ${data.trade.price}`)
-      })
-      
-      // 连接WebSocket
-      orderbookEngineAPI.connectWebSocket()
       setUseEngine(true)
+      setMessage('✅ OrderBook引擎已启用')
       
     } catch (error) {
       console.error('引擎初始化失败:', error)
@@ -98,27 +168,39 @@ const OrderBookTrade = () => {
   }
 
   const stopEngine = () => {
-    orderbookEngineAPI.disconnect()
+    if (wsConnection) {
+      wsConnection.close()
+      setWsConnection(null)
+    }
     setUseEngine(false)
     setEngineStatus('disconnected')
-    setMessage('OrderBook引擎已停用')
+    setMessage('❌ OrderBook引擎已停用')
   }
 
   // 从引擎数据更新订单簿
   const updateOrderBookFromEngine = (data) => {
     try {
+      console.log('Updating orderbook from engine:', data)
+      
+      // 确保数据存在且为数组
+      const bids = Array.isArray(data.bids) ? data.bids : []
+      const asks = Array.isArray(data.asks) ? data.asks : []
+      
       // 转换引擎数据格式为前端格式
-      const buyOrdersData = data.bids.map(level => ({
+      const buyOrdersData = bids.map(level => ({
         price: level.price,
         amount: level.amount,
         total: (parseFloat(level.price) * parseFloat(level.amount)).toFixed(2)
       }))
       
-      const sellOrdersData = data.asks.map(level => ({
+      const sellOrdersData = asks.map(level => ({
         price: level.price,
         amount: level.amount,
         total: (parseFloat(level.price) * parseFloat(level.amount)).toFixed(2)
       }))
+      
+      console.log('Setting buy orders:', buyOrdersData)
+      console.log('Setting sell orders:', sellOrdersData)
       
       setBuyOrders(buyOrdersData)
       setSellOrders(sellOrdersData)
@@ -225,6 +307,96 @@ const OrderBookTrade = () => {
     }
   }
 
+  // 从引擎加载用户订单
+  const loadEngineOrders = async () => {
+    if (!account) return
+
+    try {
+      const response = await fetch(`http://localhost:8084/api/v1/orders?user_address=${account}`)
+      const data = await response.json()
+      
+      const engineOrders = (data.orders || []).map(order => {
+        // 从wei单位转换为可读格式
+        const priceInUSDC = parseFloat(ethers.formatUnits(order.price, TOKEN_ADDRESSES.USDC.decimals))
+        const amountInWETH = parseFloat(ethers.formatUnits(order.amount, TOKEN_ADDRESSES.WETH.decimals))
+        const filledInWETH = order.filled ? parseFloat(ethers.formatUnits(order.filled, TOKEN_ADDRESSES.WETH.decimals)) : 0
+        
+        return {
+          id: order.id,
+          type: order.side === 'buy' ? '买入' : '卖出',
+          price: priceInUSDC.toFixed(2),
+          amount: amountInWETH.toFixed(4),
+          filled: filledInWETH.toFixed(4),
+          status: order.status === 'open' ? '挂单中' : 
+                 order.status === 'filled' ? '已完成' : 
+                 order.status === 'cancelled' ? '已取消' : order.status,
+          tokenPair: 'WETH/USDC',
+          rawStatus: order.status,
+          source: 'engine'
+        }
+      })
+
+      setMyOrders(prev => [...engineOrders, ...prev.filter(o => o.source !== 'engine')])
+    } catch (err) {
+      console.error('Failed to load engine orders:', err)
+    }
+  }
+
+  // 加载订单簿数据 (引擎API)
+  const loadOrderbook = async () => {
+    try {
+      const response = await fetch('http://localhost:8084/api/v1/orderbook/WETH-USDC')
+      const data = await response.json()
+      
+      // 转换为组件需要的格式 (从wei单位转换为可读格式)
+      const buyOrdersData = (data.bids || []).map(level => {
+        // price是USDC的wei单位 (6位小数)，amount是WETH的wei单位 (18位小数)
+        const priceInUSDC = parseFloat(ethers.formatUnits(level.price, TOKEN_ADDRESSES.USDC.decimals))
+        const amountInWETH = parseFloat(ethers.formatUnits(level.amount, TOKEN_ADDRESSES.WETH.decimals))
+        return {
+          price: priceInUSDC.toFixed(2),
+          amount: amountInWETH.toFixed(4),
+          total: (priceInUSDC * amountInWETH).toFixed(2)
+        }
+      })
+      
+      const sellOrdersData = (data.asks || []).map(level => {
+        const priceInUSDC = parseFloat(ethers.formatUnits(level.price, TOKEN_ADDRESSES.USDC.decimals))
+        const amountInWETH = parseFloat(ethers.formatUnits(level.amount, TOKEN_ADDRESSES.WETH.decimals))
+        return {
+          price: priceInUSDC.toFixed(2),
+          amount: amountInWETH.toFixed(4),
+          total: (priceInUSDC * amountInWETH).toFixed(2)
+        }
+      })
+      
+      setBuyOrders(buyOrdersData)
+      setSellOrders(sellOrdersData)
+      
+      // 更新最佳买卖价
+      if (buyOrdersData.length > 0) {
+        setBestBid(buyOrdersData[0].price)
+      }
+      if (sellOrdersData.length > 0) {
+        setBestAsk(sellOrdersData[0].price)
+      }
+      
+    } catch (err) {
+      console.error('Failed to load orderbook:', err)
+    }
+  }
+
+  // 加载交易历史
+  const loadTrades = async () => {
+    try {
+      const response = await fetch('http://localhost:8084/api/v1/trades')
+      const data = await response.json()
+      setTrades(data.trades || [])
+    } catch (err) {
+      console.error('Failed to load trades:', err)
+    }
+  }
+
   // 获取我的订单
   const fetchMyOrders = async () => {
     if (!orderBook || !account) {
@@ -278,7 +450,108 @@ const OrderBookTrade = () => {
     }
   }
 
-  // 下单
+  // 下单 - 使用撮合引擎API (包含EIP-712签名)
+  const placeOrderWithEngine = async () => {
+    if (!signer || !account || !price || !amount) {
+      setMessage('请填写价格和数量并连接钱包')
+      return
+    }
+
+    setLoading(true)
+    setMessage('🔐 正在签名订单...')
+
+    try {
+      // 1. 准备订单数据 (匹配Go签名器期望的字段名和格式)
+      const orderData = {
+        userAddress: account,
+        baseToken: TOKEN_ADDRESSES.WETH.address,
+        quoteToken: TOKEN_ADDRESSES.USDC.address,
+        side: orderSide === 'buy' ? 0 : 1, // 0=买入, 1=卖出
+        orderType: 0, // 0=限价单
+        price: ethers.parseUnits(price, TOKEN_ADDRESSES.USDC.decimals), // 转换为wei单位
+        amount: ethers.parseUnits(amount, TOKEN_ADDRESSES.WETH.decimals), // 转换为wei单位
+        expiresAt: Math.floor(Date.now() / 1000) + 24 * 60 * 60, // Unix时间戳
+        nonce: Date.now()
+      }
+
+      // 2. EIP-712签名
+      setMessage('🔐 请在钱包中签名订单...')
+      
+      const domain = {
+        name: 'OrderBook DEX',
+        version: '1.0',
+        chainId: await signer.provider.getNetwork().then(n => n.chainId),
+        verifyingContract: '0xf4B146FbA71F41E0592668ffbF264F1D186b2Ca8' // 从config.yaml获取的合约地址
+      }
+
+      const types = {
+        Order: [
+          { name: 'userAddress', type: 'address' },
+          { name: 'baseToken', type: 'address' },
+          { name: 'quoteToken', type: 'address' },
+          { name: 'side', type: 'uint8' },
+          { name: 'orderType', type: 'uint8' },
+          { name: 'price', type: 'uint256' },
+          { name: 'amount', type: 'uint256' },
+          { name: 'expiresAt', type: 'uint256' },
+          { name: 'nonce', type: 'uint256' }
+        ]
+      }
+
+      const signature = await signer.signTypedData(domain, types, orderData)
+      
+      // 3. 发送带签名的订单
+      setMessage('📡 提交订单到撮合引擎...')
+      
+      // 创建API格式的订单数据 (必须与签名数据完全一致)
+      const apiOrderData = {
+        user_address: account,
+        trading_pair: "WETH-USDC",
+        base_token: TOKEN_ADDRESSES.WETH.address,
+        quote_token: TOKEN_ADDRESSES.USDC.address,
+        side: orderSide === 'buy' ? 'buy' : 'sell', // 保持字符串格式但确保一致
+        type: "limit",
+        // 使用与签名相同的数据格式
+        price: orderData.price.toString(), // BigInt转字符串
+        amount: orderData.amount.toString(), // BigInt转字符串
+        expires_at: new Date(orderData.expiresAt * 1000).toISOString(), // 从Unix时间戳转换
+        nonce: orderData.nonce,
+        signature: signature
+      }
+      
+      const response = await fetch('http://localhost:8084/api/v1/orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(apiOrderData)
+      })
+
+      const result = await response.json()
+
+      // 检查响应状态码或订单ID存在
+      if (response.ok && result.order_id) {
+        setMessage(`✅ 订单已提交！订单ID: ${result.order_id}`)
+        // 刷新订单簿数据
+        await loadOrderbook()
+        await loadEngineOrders()
+        
+        // 清空输入
+        setPrice('')
+        setAmount('')
+      } else {
+        setMessage(`❌ 订单提交失败: ${result.message || '未知错误'}`)
+      }
+
+    } catch (err) {
+      console.error('Engine order failed:', err)
+      setMessage(`❌ 引擎订单失败: ${err.message}`)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // 传统链上下单
   const placeOrder = async () => {
     if (!orderBook || !signer || !price || !amount) {
       setMessage('请填写价格和数量')
@@ -509,14 +782,28 @@ const OrderBookTrade = () => {
 
   // 定时刷新数据
   useEffect(() => {
-    if (isCorrectNetwork && orderBook) {
-      fetchOrderBook()
-      fetchMyOrders()
+    if (isCorrectNetwork && account) {
+      // 加载引擎数据
+      loadOrderbook()
+      loadEngineOrders()
+      loadTrades()
       
-      const interval = setInterval(() => {
+      // 只有在不使用引擎时才加载链上数据
+      if (orderBook && !useEngine) {
         fetchOrderBook()
         fetchMyOrders()
-      }, 5000)
+      }
+      
+      const interval = setInterval(() => {
+        loadOrderbook()
+        loadEngineOrders()
+        loadTrades()
+        // 只有在不使用引擎时才读取合约数据
+        if (orderBook && !useEngine) {
+          fetchOrderBook()
+          fetchMyOrders()
+        }
+      }, 3000)
       
       return () => clearInterval(interval)
     }
@@ -535,7 +822,7 @@ const OrderBookTrade = () => {
   return (
     <div className="orderbook-trade-container">
       <div className="orderbook-header">
-        <h1>订单簿交易</h1>
+        <h1>⚡ OrderBook DEX - 高性能链下撮合</h1>
         <div className="header-controls">
           <div className="pair-selector">
             <select 
@@ -560,29 +847,47 @@ const OrderBookTrade = () => {
             {loading ? '检查中...' : '🔍 检查可匹配订单'}
           </button>
           
-          <button 
-            className={`engine-btn ${useEngine ? 'active' : ''}`}
-            onClick={useEngine ? stopEngine : initializeEngine}
-            disabled={loading}
-            title={useEngine ? 'OrderBook引擎已启用' : '启用OrderBook引擎实现自动撮合'}
-          >
-            {useEngine ? (
-              <span>
-                🚀 引擎 
-                <span className={`status-dot ${engineStatus}`}></span>
-              </span>
-            ) : (
-              '⚡ 启用引擎'
+          <div className="engine-status-display">
+            <span className={`engine-indicator ${engineStatus}`}>
+              {engineStatus === 'connected' ? '🟢' : 
+               engineStatus === 'connecting' ? '🟡' : '🔴'}
+            </span>
+            <span className="engine-text">
+              {engineStatus === 'connected' ? '撮合引擎' : 
+               engineStatus === 'connecting' ? '连接中...' : '引擎离线'}
+            </span>
+            {engineStatus === 'disconnected' && (
+              <button 
+                className="reconnect-btn"
+                onClick={initializeEngine}
+                disabled={loading}
+              >
+                重连
+              </button>
             )}
-          </button>
+          </div>
         </div>
       </div>
 
       <div className="orderbook-content">
         {/* 订单簿深度 */}
         <div className="orderbook-depth">
+          <div className="orderbook-header-info">
+            <h3>📊 ETH/USDC 订单簿</h3>
+            <div className="realtime-status">
+              <span className={`status-indicator ${engineStatus}`}>
+                {engineStatus === 'connected' ? '🟢 实时' : '🔴 离线'}
+              </span>
+              {lastUpdate && (
+                <span className="last-update">
+                  更新: {lastUpdate}
+                </span>
+              )}
+            </div>
+          </div>
+          
           <div className="depth-section">
-            <h3>卖单</h3>
+            <h3>卖单 ({sellOrders.length})</h3>
             <div className="depth-header">
               <span>价格(USDC)</span>
               <span>数量(WETH)</span>
@@ -611,7 +916,7 @@ const OrderBookTrade = () => {
           </div>
 
           <div className="depth-section">
-            <h3>买单</h3>
+            <h3>买单 ({buyOrders.length})</h3>
             <div className="depth-header">
               <span>价格(USDC)</span>
               <span>数量(WETH)</span>
@@ -700,10 +1005,14 @@ const OrderBookTrade = () => {
 
             <button 
               className={`place-order-btn ${orderSide}`}
-              onClick={placeOrder}
-              disabled={loading || !account}
+              onClick={placeOrderWithEngine}
+              disabled={loading || !account || engineStatus !== 'connected'}
             >
-              {loading ? '处理中...' : (account ? `${orderSide === 'buy' ? '买入' : '卖出'} WETH` : '请先连接钱包')}
+              {loading ? '⏳ 处理中...' : 
+               !account ? '🔗 请先连接钱包' :
+               engineStatus !== 'connected' ? '⚠️ 引擎未连接' :
+               `${orderSide === 'buy' ? '🟢 买入' : '🔴 卖出'} ${amount || '0'} WETH`
+              }
             </button>
 
             {message && (
@@ -714,9 +1023,44 @@ const OrderBookTrade = () => {
           </div>
         </div>
 
-        {/* 我的订单 */}
+        {/* 我的订单和交易历史 */}
         <div className="my-orders">
-          <h3>我的订单</h3>
+          <div className="orders-header">
+            <h3>📝 我的交易</h3>
+            <div className="orders-stats">
+              <span className="stat-item">
+                订单: <strong>{myOrders.length}</strong>
+              </span>
+              <span className="stat-item">
+                成交: <strong>{trades.length}</strong>
+              </span>
+            </div>
+          </div>
+          
+          {/* 标签切换 */}
+          <div className="trade-tabs">
+            <button 
+              className={activeOrderTab === 'orders' ? 'active' : ''}
+              onClick={() => setActiveOrderTab('orders')}
+            >
+              📋 我的订单
+            </button>
+            <button 
+              className={activeOrderTab === 'trades' ? 'active' : ''}
+              onClick={() => setActiveOrderTab('trades')}
+            >
+              📈 交易记录
+            </button>
+            <button 
+              className={activeOrderTab === 'history' ? 'active' : ''}
+              onClick={() => setActiveOrderTab('history')}
+            >
+              📊 市场成交
+            </button>
+          </div>
+          
+          {/* 我的订单表格 */}
+          {activeOrderTab === 'orders' && (
           <div className="orders-table">
             <div className="table-header">
               <span>交易对</span>
@@ -755,6 +1099,69 @@ const OrderBookTrade = () => {
               )}
             </div>
           </div>
+          )}
+          
+          {/* 交易记录表格 */}
+          {activeOrderTab === 'trades' && (
+          <div className="trades-table">
+            <div className="table-header">
+              <span>时间</span>
+              <span>交易对</span>
+              <span>类型</span>
+              <span>价格</span>
+              <span>数量</span>
+              <span>总计</span>
+              <span>状态</span>
+            </div>
+            <div className="table-body">
+              {/* 用户的交易记录 - 这里可以从API获取 */}
+              <div className="empty-state">
+                <span>🔍 暂无交易记录</span>
+                <p>完成首笔交易后将在此显示</p>
+              </div>
+            </div>
+          </div>
+          )}
+          
+          {/* 市场成交历史 */}
+          {activeOrderTab === 'history' && (
+          <div className="market-trades">
+            <div className="trades-header">
+              <span>时间</span>
+              <span>价格</span>
+              <span>数量</span>
+              <span>方向</span>
+            </div>
+            <div className="trades-body">
+              {trades.length > 0 ? trades.slice(0, 20).map((trade, i) => (
+                <div key={trade.id || i} className="trade-row">
+                  <span className="trade-time">
+                    {new Date(trade.timestamp).toLocaleTimeString('zh-CN', {
+                      hour12: false,
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit'
+                    })}
+                  </span>
+                  <span className={`trade-price ${trade.side}`}>
+                    {parseFloat(trade.price).toFixed(2)}
+                  </span>
+                  <span className="trade-amount">
+                    {parseFloat(trade.amount).toFixed(4)}
+                  </span>
+                  <span className={`trade-side ${trade.side}`}>
+                    {trade.side === 'buy' ? '📈 买入' : '📉 卖出'}
+                  </span>
+                </div>
+              )) : (
+                <div className="empty-state">
+                  <span>📊 暂无市场成交</span>
+                  <p>等待市场产生交易</p>
+                </div>
+              )}
+            </div>
+          </div>
+          )}
         </div>
       </div>
     </div>

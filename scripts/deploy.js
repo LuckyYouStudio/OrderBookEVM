@@ -16,18 +16,9 @@ async function main() {
   await tokenRegistry.waitForDeployment();
   console.log("TokenRegistry deployed to:", await tokenRegistry.getAddress());
 
-  // Deploy OrderBook
-  console.log("\nDeploying OrderBook...");
-  const OrderBook = await ethers.getContractFactory("OrderBook");
-  const orderBook = await upgrades.deployProxy(OrderBook, [], {
-    initializer: "initialize"
-  });
-  await orderBook.waitForDeployment();
-  console.log("OrderBook deployed to:", await orderBook.getAddress());
-
-  // Deploy Settlement
-  console.log("\nDeploying Settlement...");
-  const Settlement = await ethers.getContractFactory("Settlement");
+  // Deploy OptimizedSettlement (核心结算合约)
+  console.log("\nDeploying OptimizedSettlement...");
+  const Settlement = await ethers.getContractFactory("OptimizedSettlement");
   const settlement = await upgrades.deployProxy(Settlement, [deployer.address, deployer.address], {
     initializer: "initialize"
   });
@@ -38,22 +29,11 @@ async function main() {
   const orderMatchingAddress = ethers.ZeroAddress;
   console.log("OrderMatching address set to:", orderMatchingAddress, "(disabled)");
 
-  // Set contract addresses
-  console.log("\nSetting contract addresses...");
-  
-  await orderBook.setContracts(
-    orderMatchingAddress,
-    await settlement.getAddress(),
-    await tokenRegistry.getAddress()
-  );
-  console.log("OrderBook contracts set");
-
-  // Settlement doesn't have setContracts function
-  // await settlement.setContracts(
-  //   await orderBook.getAddress(),
-  //   orderMatchingAddress
-  // );
-  console.log("Settlement contracts set (no setContracts function)");
+  // Contract configuration
+  console.log("\nContract setup completed:");
+  console.log("- TokenRegistry: Token management");
+  console.log("- OptimizedSettlement: EIP-712 verification & atomic swaps");
+  console.log("- OrderBook: Handled by off-chain matching engine");
 
   // Deploy mock tokens for testing
   let usdc, weth;
@@ -112,9 +92,8 @@ async function main() {
   console.log("\nDeployment Summary:");
   console.log("==================");
   console.log("TokenRegistry:", await tokenRegistry.getAddress());
-  console.log("OrderBook:", await orderBook.getAddress());
-  console.log("Settlement:", await settlement.getAddress());
-  console.log("OrderMatching:", orderMatchingAddress, "(disabled)");
+  console.log("OptimizedSettlement:", await settlement.getAddress());
+  console.log("OrderBook: Off-chain (Matching Engine)");
   
   if (network.name === "hardhat" || network.name === "localhost") {
     console.log("Mock USDC:", await usdc.getAddress());

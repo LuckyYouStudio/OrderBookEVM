@@ -8,8 +8,10 @@ go 1.21 // 需要 Go 1.21 或更高版本
 require (
 	github.com/ethereum/go-ethereum v1.13.10 // 以太坊 Go 客户端库
 	github.com/gin-gonic/gin v1.9.1 // HTTP Web 框架
+	github.com/go-redis/redis/v8 v8.11.5 // Redis 客户端
 	github.com/google/uuid v1.5.0 // UUID 生成器
 	github.com/gorilla/websocket v1.5.1 // WebSocket 实现
+	github.com/lib/pq v1.10.9 // PostgreSQL 驱动
 	github.com/shopspring/decimal v1.3.1 // 高精度十进制计算
 	github.com/sirupsen/logrus v1.9.3 // 结构化日志库
 	github.com/spf13/viper v1.18.2 // 配置管理库
@@ -23,6 +25,7 @@ require (
 	github.com/bits-and-blooms/bitset v1.10.0 // indirect
 	github.com/btcsuite/btcd/btcec/v2 v2.2.0 // indirect
 	github.com/bytedance/sonic v1.9.1 // indirect
+	github.com/cespare/xxhash/v2 v2.2.0 // indirect
 	github.com/chenzhuoyu/base64x v0.0.0-20221115062448-fe3a3abad311 // indirect
 	github.com/consensys/bavard v0.1.13 // indirect
 	github.com/consensys/gnark-crypto v0.12.1 // indirect
@@ -30,6 +33,7 @@ require (
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/deckarep/golang-set/v2 v2.1.0 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.0.1 // indirect
+	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/ethereum/c-kzg-4844 v0.4.0 // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.2 // indirect

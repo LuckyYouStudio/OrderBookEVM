@@ -2,11 +2,11 @@ package blockchain
 
 import (
 	"context"
-	"math/big"
+	"fmt"
 	"time"
 
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"github.com/shopspring/decimal"
 

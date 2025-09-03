@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -127,13 +128,13 @@ func initConfig() {
 	viper.AddConfigPath(".")
 
 	// 设置默认值
-	viper.SetDefault("server.address", ":8080")
+	viper.SetDefault("server.address", ":8084")
 	viper.SetDefault("server.read_timeout", "15s")
 	viper.SetDefault("server.write_timeout", "15s")
 	viper.SetDefault("log.level", "info")
 	viper.SetDefault("log.format", "json")
 	viper.SetDefault("blockchain.chain_id", 31337)
-	viper.SetDefault("blockchain.contract_address", "0x0000000000000000000000000000000000000000")
+	viper.SetDefault("blockchain.contract_address", "0xf4B146FbA71F41E0592668ffbF264F1D186b2Ca8")
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
@@ -171,9 +172,8 @@ func initLogger() *logrus.Logger {
 
 // initStorage 初始化存储
 func initStorage() (storage.Storage, error) {
-	// 这里应该根据配置选择存储实现
-	// 目前返回一个内存存储的模拟实现
-	return &MemoryStorage{}, nil
+	// 返回功能完整的内存存储实现
+	return NewMemoryStorage(), nil
 }
 
 // setupRoutes 设置路由
@@ -334,30 +334,199 @@ func handleMatchingEvents(engine *matching.MatchingEngine, wsHub *websocket.Hub,
 	}
 }
 
-// MemoryStorage 内存存储实现（用于演示）
-type MemoryStorage struct{}
+// MemoryStorage 内存存储实现
+type MemoryStorage struct {
+	orders    map[uuid.UUID]*types.Order
+	ordersByHash map[string]*types.Order
+	fills     map[uuid.UUID]*types.Fill
+	mu        sync.RWMutex
+}
 
-func (m *MemoryStorage) CreateOrder(order *types.Order) error        { return nil }
-func (m *MemoryStorage) GetOrder(orderID uuid.UUID) (*types.Order, error) { return nil, nil }
-func (m *MemoryStorage) GetOrderByHash(hash string) (*types.Order, error) { return nil, nil }
-func (m *MemoryStorage) UpdateOrder(order *types.Order) error        { return nil }
+func NewMemoryStorage() *MemoryStorage {
+	return &MemoryStorage{
+		orders:    make(map[uuid.UUID]*types.Order),
+		ordersByHash: make(map[string]*types.Order),
+		fills:     make(map[uuid.UUID]*types.Fill),
+	}
+}
+
+func (m *MemoryStorage) CreateOrder(order *types.Order) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.orders[order.ID] = order
+	if order.Hash != "" {
+		m.ordersByHash[order.Hash] = order
+	}
+	return nil
+}
+
+func (m *MemoryStorage) GetOrder(orderID uuid.UUID) (*types.Order, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	order, exists := m.orders[orderID]
+	if !exists {
+		return nil, fmt.Errorf("order not found")
+	}
+	return order, nil
+}
+
+func (m *MemoryStorage) GetOrderByHash(hash string) (*types.Order, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	order, exists := m.ordersByHash[hash]
+	if !exists {
+		return nil, fmt.Errorf("order not found")
+	}
+	return order, nil
+}
+
+func (m *MemoryStorage) UpdateOrder(order *types.Order) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.orders[order.ID] = order
+	if order.Hash != "" {
+		m.ordersByHash[order.Hash] = order
+	}
+	return nil
+}
+
 func (m *MemoryStorage) GetUserOrders(userAddress, tradingPair, status string, limit, offset int) ([]*types.Order, error) {
-	return []*types.Order{}, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	var result []*types.Order
+	for _, order := range m.orders {
+		if order.UserAddress == userAddress {
+			if tradingPair != "" && order.TradingPair != tradingPair {
+				continue
+			}
+			if status != "" && string(order.Status) != status {
+				continue
+			}
+			result = append(result, order)
+		}
+	}
+	
+	// 简单分页
+	start := offset
+	if start >= len(result) {
+		return []*types.Order{}, nil
+	}
+	
+	end := start + limit
+	if end > len(result) {
+		end = len(result)
+	}
+	
+	return result[start:end], nil
 }
-func (m *MemoryStorage) GetActiveOrders(tradingPair string) ([]*types.Order, error) { return []*types.Order{}, nil }
-func (m *MemoryStorage) CreateFill(fill *types.Fill) error             { return nil }
-func (m *MemoryStorage) GetOrderFills(orderID uuid.UUID) ([]*types.Fill, error) { return []*types.Fill{}, nil }
+
+func (m *MemoryStorage) GetActiveOrders(tradingPair string) ([]*types.Order, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	var result []*types.Order
+	for _, order := range m.orders {
+		if order.IsActive() {
+			if tradingPair == "" || order.TradingPair == tradingPair {
+				result = append(result, order)
+			}
+		}
+	}
+	
+	return result, nil
+}
+
+func (m *MemoryStorage) CreateFill(fill *types.Fill) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fills[fill.ID] = fill
+	return nil
+}
+
+func (m *MemoryStorage) GetOrderFills(orderID uuid.UUID) ([]*types.Fill, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	var result []*types.Fill
+	for _, fill := range m.fills {
+		if fill.TakerOrderID == orderID || fill.MakerOrderID == orderID {
+			result = append(result, fill)
+		}
+	}
+	
+	return result, nil
+}
+
 func (m *MemoryStorage) GetUserFills(userAddress string, limit, offset int) ([]*types.Fill, error) {
-	return []*types.Fill{}, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	var result []*types.Fill
+	for _, fill := range m.fills {
+		// 需要通过订单ID查找用户地址
+		if takerOrder, exists := m.orders[fill.TakerOrderID]; exists && takerOrder.UserAddress == userAddress {
+			result = append(result, fill)
+		} else if makerOrder, exists := m.orders[fill.MakerOrderID]; exists && makerOrder.UserAddress == userAddress {
+			result = append(result, fill)
+		}
+	}
+	
+	// 简单分页
+	start := offset
+	if start >= len(result) {
+		return []*types.Fill{}, nil
+	}
+	
+	end := start + limit
+	if end > len(result) {
+		end = len(result)
+	}
+	
+	return result[start:end], nil
 }
+
 func (m *MemoryStorage) GetRecentFills(tradingPair string, limit int) ([]*types.Fill, error) {
-	return []*types.Fill{}, nil
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	
+	var result []*types.Fill
+	for _, fill := range m.fills {
+		if tradingPair == "" || fill.TradingPair == tradingPair {
+			result = append(result, fill)
+		}
+	}
+	
+	// 限制数量
+	if limit > 0 && len(result) > limit {
+		result = result[:limit]
+	}
+	
+	return result, nil
 }
+
 func (m *MemoryStorage) GetTradingPairStats(tradingPair string, period time.Duration) (*storage.TradingPairStats, error) {
-	return &storage.TradingPairStats{}, nil
+	return &storage.TradingPairStats{
+		TradingPair: tradingPair,
+		TradeCount:  0,
+		Volume:      "0",
+		LowPrice:    "0",
+		HighPrice:   "0",
+		OpenPrice:   "0",
+		ClosePrice:  "0",
+		Timestamp:   time.Now(),
+	}, nil
 }
+
 func (m *MemoryStorage) GetUserStats(userAddress string, period time.Duration) (*storage.UserStats, error) {
-	return &storage.UserStats{}, nil
+	return &storage.UserStats{
+		UserAddress: userAddress,
+		OrderCount:  0,
+		TradeCount:  0,
+		Volume:      "0",
+		Timestamp:   time.Now(),
+	}, nil
 }
+
 func (m *MemoryStorage) HealthCheck() error { return nil }
 func (m *MemoryStorage) Close() error       { return nil }
